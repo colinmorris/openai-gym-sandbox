@@ -4,7 +4,7 @@ import gym
 
 from matplotlib import pyplot as plt
 
-N_EPISODES = 2000
+N_EPISODES = 5000
 GAMMA = 0.5
 RENDER_EPISODES = 0
 
@@ -18,7 +18,6 @@ def weight_var(shape):
 
 def episode(sess, env, pactions, nchars, actions_size, x, render=False):
   obs = env.reset()
-  # ZZZ
   last_action = [0] * actions_size
   last_char = None
   last_reward = 0
@@ -34,7 +33,9 @@ def episode(sess, env, pactions, nchars, actions_size, x, render=False):
       last_char_arr[last_char] = 1
     return curr_char_arr + last_char_arr + last_action + [last_reward]
 
+  counter = 0
   for i in range(100):
+    counter += 1
     if render:
       env.render()
     curr_x = pack_x()
@@ -48,23 +49,21 @@ def episode(sess, env, pactions, nchars, actions_size, x, render=False):
       assert probs.shape[0] == 1
       probs = probs[0]
       sample = np.sum(np.cumsum(probs) < np.random.rand())
-      #assert env.action_space.spaces[i].contains(sample)
       actions_onehot[onehot_offset+sample] = 1
       onehot_offset += probs.shape[0]
       actions.append(sample)
 
     action_history.append(actions_onehot)
     assert env.action_space.contains(actions)
+    last_char = obs
     obs, last_reward, done, _ = env.step(actions)
     total_reward += last_reward
     rewards.append(last_reward)
     last_action = actions_onehot
-    last_char = obs
     if done:
-      #print "Lasted {} iterations".format(i)
       break
       
-  return xs, action_history, rewards, total_reward, i
+  return xs, action_history, rewards, total_reward, counter
 
 def policy_gradient(paction_cat, actions_size):
   rewards = tf.placeholder(tf.float32, shape=[None])
@@ -99,7 +98,7 @@ if __name__ == '__main__':
 
   n_hidden = 50
 
-  nchars = env.observation_space.n + 1
+  nchars = env.observation_space.n 
   n_actions = len(env.action_space.spaces)
   # 2 + 2 + 5 (move head, write or nah, which char to write)
   actions_size = sum(space.n for space in env.action_space.spaces)
@@ -133,12 +132,18 @@ if __name__ == '__main__':
   iters_per_ep = []
   loss_per_ep = []
   DEBUG = 0
+  STANDARDIZE_REWARD = 0
   env_length = 2
   for ep in range(N_EPISODES):
     xs, actions, rewards, total_reward, iters = episode(sess, env, pactions, nchars, actions_size, x)
     raw_disco_rewards = discounted_rewards(rewards)
-    disco_rewards = raw_disco_rewards - np.mean(raw_disco_rewards)
-    disco_rewards /= np.std(disco_rewards)
+    if STANDARDIZE_REWARD:
+      disco_rewards = raw_disco_rewards - np.mean(raw_disco_rewards)
+      disco_std = np.std(disco_rewards)
+      if disco_std:
+        disco_rewards /= np.std(disco_rewards)
+    else:
+      disco_rewards = raw_disco_rewards
     if DEBUG:
       pca, foc, temp, loz = sess.run([paction_cat, focprobs, tempered, loss], 
         feed_dict={x:xs, actions_ph: actions, reward_ph: disco_rewards})
