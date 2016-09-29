@@ -4,27 +4,56 @@ import numpy as np
 import gym
 import sys
 
-# TODO: It could be interesting to work on a version of this problem with no time limit.
+#ENV_NAME = 'Copy-v0'
+ENV_NAME = 'DuplicatedInput-v0'
+
+_CONFIGS = {
+  'Copy-v0': dict(
+    gamma=.5,
+    zero_penalty=-.6
+  ),
+  'DuplicatedInput-v0': dict(
+    gamma=.8,
+    zero_penalty=-.001,
+    input_last_char=1,
+    input_last_action=1,
+    learning_rate=0.005,
+  ),
+}
+  
+
+_CONFIG = _CONFIGS[ENV_NAME]
 
 N_EPISODES = 10000
-# It sort of makes sense that this wants to be low for this problem. There isn't
-# really any long-term planning involved. In fact, could probably even set this to 0.
-GAMMA = 0.8
-RENDER_EPISODES = 0
+EARLY_EXIT = 1
+# Does setting this to high values encourage dilly-dallying? (And does ZERO_PENALTY offset that?)
+GAMMA = _CONFIG.get('gamma', .9)
+RENDER_EPISODES = 10
 L2 = 1
 L2_WEIGHT = 0.001
 COMPLETION_BONUS = 0
+LEARNING_RATE = _CONFIG.get('learning_rate', 0.001)
 
-INPUT_LAST_CHAR = 1
-INPUT_LAST_ACTION = 1
+INPUT_LAST_CHAR = _CONFIG.get('input_last_char', 0)
+INPUT_LAST_ACTION = _CONFIG.get('input_last_action', 0)
 INPUT_LAST_REWARD = 0
+
+N_HIDDEN = 40
+
+TELESCOPING_REWARDS = 0
+
+# This hurts things very badly. iunno why. Got the idea from here:
+#     https://gist.github.com/karpathy/a4166c7fe253700972fcbc77e4ea32c5
+# Maybe it makes more sense for that kind of problem where one episode 
+# can have thousands of transitions?
+STANDARDIZE_REWARD = 0
 
 # Setting this to -.2 or less seems to help a lot for copy (almost necessary)
 # Sweet spot maybe around -.6
 # Obviously a high value of this is not good for dedupe, but it can tolerate 
 # a penalty <= -.3. A very small penalty like -.01 might even help? Haven't
 # collected a ton of data though.
-ZERO_PENALTY = -0.01
+ZERO_PENALTY = _CONFIG.get('zero_penalty', 0)
 
 def bias_var(shape):
   initial = tf.constant(.1, shape=shape)
@@ -105,19 +134,26 @@ def policy_gradient(paction_cat, actions_size):
   #     https://github.com/kvfrans/openai-cartpole/blob/master/cartpole-policygradient.py
   #  not sure if there are other reasonable ways to do it.)
   
-  #tempered = tf.mul(tf.log(focused_probs), rewards)
-  tempered = tf.mul(focused_probs, rewards)
+  tempered = tf.mul(tf.log(focused_probs), rewards)
+  #tempered = tf.mul(focused_probs, rewards)
   loss = -tf.reduce_sum(tempered)
   if L2:
     l2_loss = tf.add_n([tf.nn.l2_loss(v) for v in tf.trainable_variables()])
     loss = loss + L2_WEIGHT * l2_loss
-  optimizer = tf.train.AdamOptimizer(0.001).minimize(loss)
+  optimizer = tf.train.AdamOptimizer(LEARNING_RATE).minimize(loss)
   return (
     rewards, actions, optimizer,
       focused_probs, tempered, loss,
   )
 
 def discounted_rewards(r):
+  if TELESCOPING_REWARDS:
+    running = 1
+    for i, ree in enumerate(r):
+      if ree == 1:
+        r[i] = running
+        #running += 1
+        running = running*2 + 4
   r2 = np.zeros_like(r)
   running_sum = 0
   bonus = COMPLETION_BONUS if (COMPLETION_BONUS and r[-1] == 1) else 1
@@ -137,11 +173,17 @@ if __name__ == '__main__':
   # TODO: This would all have been easier if I had just used np arrays throughout rather than
   # mixing them with lists. Bleh.
   sess = tf.InteractiveSession()
-  env = gym.make('DuplicatedInput-v0')
-  #env = gym.make('Copy-v0')
-
-  n_hidden = 30
-
+  env = gym.make(ENV_NAME)
+  ''' experiment
+  gym.envs.register(
+      id='Reverse-v1',
+      entry_point='gym.envs.algorithmic:ReverseEnv',
+      kwargs={'base': 5},
+      timestep_limit=200,
+      reward_threshold=25.0,
+  )
+  env = gym.make('Reverse-v1')
+  '''
   nchars = env.observation_space.n 
   n_actions = len(env.action_space.spaces)
   # 2 + 2 + 5 (move head, write or nah, which char to write)
@@ -154,15 +196,14 @@ if __name__ == '__main__':
     INPUT_LAST_REWARD * 1
   )
   x = tf.placeholder(tf.float32, shape=[None, input_size])
-  
-  w1 = weight_var([input_size, n_hidden])
-  b1 = bias_var([n_hidden])
+  w1 = weight_var([input_size, N_HIDDEN])
+  b1 = bias_var([N_HIDDEN])
   h1 = tf.nn.relu( tf.matmul(x, w1) + b1 )
-
-  w2 = weight_var([n_hidden, actions_size])
+  w2 = weight_var([N_HIDDEN, actions_size])
   b2 = bias_var([actions_size])
   y = tf.nn.relu( tf.matmul(h1, w2) + b2 )
   
+  # Probabilities of each action
   pactions = []
   offset = 0
   for space in env.action_space.spaces:
@@ -181,14 +222,12 @@ if __name__ == '__main__':
   iters_per_ep = []
   loss_per_ep = []
   DEBUG = 0
-  # This hurts things very badly. iunno why. Got the idea from here:
-  #     https://gist.github.com/karpathy/a4166c7fe253700972fcbc77e4ea32c5
-  # Maybe it makes more sense for that kind of problem where one episode 
-  # can have thousands of transitions?
-  STANDARDIZE_REWARD = 0
-  env_length = 2
+  env_length = env.current_length
 
+  # Experimented with batching. Seemed to hurt more than help.
   EPISODES_PER_BATCH = 1
+  # Experiment: give all actions in an episode the same score (1,-1) according to
+  # whether the episode ended successfully. Didn't really work out that well.
   REWARD_EXPERIMENT = 0
   xs = []
   actions = []
@@ -232,11 +271,13 @@ if __name__ == '__main__':
 
     rewards_per_ep.append(total_reward)
     iters_per_ep.append(iters)
+
+    # Have we graduated to the next curriculum?
     if env.current_length != env_length:
       sys.stderr.write("Leveled up! Current length = {} (ep={})\n".format(
         env.current_length, ep))
       env_length = env.current_length
-      if env.current_length == 30:
+      if env.current_length == 30 and EARLY_EXIT:
         break
 
   if RENDER_EPISODES:
@@ -257,7 +298,7 @@ if __name__ == '__main__':
   plt.plot(running_avg)
   plt.plot(iters_running_avg, 'g--')
   plt.plot(running_successes, 'c:')
-  #plt.plot(running_loss, 'r:')
+  plt.plot(running_loss, 'r:')
   print "Final avg reward around {:.2f}".format(running_avg[-1])
   plt.text(len(running_avg), running_avg[-1], '{:.1f}'.format(running_avg[-1]))
 
