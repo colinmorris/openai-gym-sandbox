@@ -13,11 +13,10 @@ _CONFIGS = {
     zero_penalty=-.6
   ),
   'DuplicatedInput-v0': dict(
-    gamma=.8,
     zero_penalty=-.001,
     input_last_char=1,
     input_last_action=1,
-    learning_rate=0.005,
+    learning_rate=0.01,
   ),
 }
   
@@ -28,7 +27,7 @@ N_EPISODES = 10000
 EARLY_EXIT = 1
 # Does setting this to high values encourage dilly-dallying? (And does ZERO_PENALTY offset that?)
 GAMMA = _CONFIG.get('gamma', .9)
-RENDER_EPISODES = 10
+RENDER_EPISODES = 0
 L2 = 1
 L2_WEIGHT = 0.001
 COMPLETION_BONUS = 0
@@ -140,7 +139,10 @@ def policy_gradient(paction_cat, actions_size):
   if L2:
     l2_loss = tf.add_n([tf.nn.l2_loss(v) for v in tf.trainable_variables()])
     loss = loss + L2_WEIGHT * l2_loss
-  optimizer = tf.train.AdamOptimizer(LEARNING_RATE).minimize(loss)
+  # I have no idea what I'm doing
+  optimizer = tf.train.AdamOptimizer(LEARNING_RATE, beta1=.8, beta2=.99).minimize(loss)
+  #optimizer = tf.train.GradientDescentOptimizer(LEARNING_RATE).minimize(loss)
+  #optimizer = tf.train.AdadeltaOptimizer(LEARNING_RATE).minimize(loss)
   return (
     rewards, actions, optimizer,
       focused_probs, tempered, loss,
@@ -152,8 +154,8 @@ def discounted_rewards(r):
     for i, ree in enumerate(r):
       if ree == 1:
         r[i] = running
-        #running += 1
-        running = running*2 + 4
+        running += 1
+        #running = running*2 + 4
   r2 = np.zeros_like(r)
   running_sum = 0
   bonus = COMPLETION_BONUS if (COMPLETION_BONUS and r[-1] == 1) else 1
@@ -298,7 +300,7 @@ if __name__ == '__main__':
   plt.plot(running_avg)
   plt.plot(iters_running_avg, 'g--')
   plt.plot(running_successes, 'c:')
-  plt.plot(running_loss, 'r:')
+  #plt.plot(running_loss, 'r:')
   print "Final avg reward around {:.2f}".format(running_avg[-1])
   plt.text(len(running_avg), running_avg[-1], '{:.1f}'.format(running_avg[-1]))
 
