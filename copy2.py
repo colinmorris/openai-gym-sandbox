@@ -13,6 +13,7 @@ GAMMA = 0.8
 RENDER_EPISODES = 0
 L2 = 1
 L2_WEIGHT = 0.001
+COMPLETION_BONUS = 5
 
 INPUT_LAST_CHAR = 0
 INPUT_LAST_ACTION = 1
@@ -101,8 +102,7 @@ def policy_gradient(paction_cat, actions_size):
   if L2:
     l2_loss = tf.add_n([tf.nn.l2_loss(v) for v in tf.trainable_variables()])
     loss = loss + L2_WEIGHT * l2_loss
-  optimizer = tf.train.AdamOptimizer(0.005).minimize(loss)
-  #optimizer = tf.train.RMSPropOptimizer(0.001, momentum=0.01).minimize(loss)
+  optimizer = tf.train.AdamOptimizer(0.001).minimize(loss)
   return (
     rewards, actions, optimizer,
       focused_probs, tempered, loss,
@@ -112,6 +112,7 @@ def discounted_rewards(r):
   r2 = np.zeros_like(r)
   running_sum = 0
   #assert r.shape[1] == 1
+  bonus = COMPLETION_BONUS if (COMPLETION_BONUS and r[-1] == 1) else 1
   for i in reversed(range(len(r))):
     # The min here is basically cheating :/
     #running_sum = min(running_sum * GAMMA,0) + r[i]
@@ -125,7 +126,7 @@ def discounted_rewards(r):
       rew = r[i]
     #rew = -.2 if r[i] == 0 else r[i]
     running_sum = running_sum * GAMMA + rew
-    r2[i] = running_sum 
+    r2[i] = running_sum * bonus
   return r2
 
 
@@ -135,7 +136,7 @@ if __name__ == '__main__':
   sess = tf.InteractiveSession()
   env = gym.make('Copy-v0')
 
-  n_hidden = 20
+  n_hidden = 30
 
   nchars = env.observation_space.n 
   n_actions = len(env.action_space.spaces)
