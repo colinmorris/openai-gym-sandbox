@@ -19,6 +19,13 @@ INPUT_LAST_CHAR = 1
 INPUT_LAST_ACTION = 1
 INPUT_LAST_REWARD = 0
 
+# Setting this to -.2 or less seems to help a lot for copy (almost necessary)
+# Sweet spot maybe around -.6
+# Obviously a high value of this is not good for dedupe, but it can tolerate 
+# a penalty <= -.3. A very small penalty like -.01 might even help? Haven't
+# collected a ton of data though.
+ZERO_PENALTY = -0.01
+
 def bias_var(shape):
   initial = tf.constant(.1, shape=shape)
   return tf.Variable(initial)
@@ -50,7 +57,6 @@ def episode(sess, env, pactions, nchars, actions_size, x, render=False):
     if INPUT_LAST_REWARD:
       xarr += [last_reward]
     return xarr
-    #return curr_char_arr + last_char_arr + last_action + [last_reward]
 
   counter = 0
   for i in range(100):
@@ -114,15 +120,14 @@ def policy_gradient(paction_cat, actions_size):
 def discounted_rewards(r):
   r2 = np.zeros_like(r)
   running_sum = 0
-  #assert r.shape[1] == 1
   bonus = COMPLETION_BONUS if (COMPLETION_BONUS and r[-1] == 1) else 1
   for i in reversed(range(len(r))):
     # The min here is basically cheating :/
     #running_sum = min(running_sum * GAMMA,0) + r[i]
-
-    # Also cheating
-    #rew = -.2 if r[i] == 0 else r[i]
     rew = r[i]
+    # Also cheating
+    if ZERO_PENALTY and r[i] == 0:
+      rew = ZERO_PENALTY
     running_sum = running_sum * GAMMA + rew
     r2[i] = running_sum * bonus
   return r2
@@ -132,8 +137,8 @@ if __name__ == '__main__':
   # TODO: This would all have been easier if I had just used np arrays throughout rather than
   # mixing them with lists. Bleh.
   sess = tf.InteractiveSession()
-  #env = gym.make('DuplicatedInput-v0')
-  env = gym.make('Copy-v0')
+  env = gym.make('DuplicatedInput-v0')
+  #env = gym.make('Copy-v0')
 
   n_hidden = 30
 
