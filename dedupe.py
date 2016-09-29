@@ -9,8 +9,8 @@ import sys
 N_EPISODES = 10000
 # It sort of makes sense that this wants to be low for this problem. There isn't
 # really any long-term planning involved. In fact, could probably even set this to 0.
-GAMMA = 0.6
-RENDER_EPISODES = 50
+GAMMA = 0.8
+RENDER_EPISODES = 0
 L2 = 1
 L2_WEIGHT = 0.001
 COMPLETION_BONUS = 0
@@ -121,13 +121,8 @@ def discounted_rewards(r):
     #running_sum = min(running_sum * GAMMA,0) + r[i]
 
     # Also cheating
-    if r[i] == 0:
-      rew = -.3
-    elif r[i] == 1:
-      rew = 1.1
-    else:
-      rew = r[i]
     #rew = -.2 if r[i] == 0 else r[i]
+    rew = r[i]
     running_sum = running_sum * GAMMA + rew
     r2[i] = running_sum * bonus
   return r2
@@ -137,7 +132,8 @@ if __name__ == '__main__':
   # TODO: This would all have been easier if I had just used np arrays throughout rather than
   # mixing them with lists. Bleh.
   sess = tf.InteractiveSession()
-  env = gym.make('DuplicatedInput-v0')
+  #env = gym.make('DuplicatedInput-v0')
+  env = gym.make('Copy-v0')
 
   n_hidden = 30
 
@@ -161,7 +157,6 @@ if __name__ == '__main__':
   w2 = weight_var([n_hidden, actions_size])
   b2 = bias_var([actions_size])
   y = tf.nn.relu( tf.matmul(h1, w2) + b2 )
-  #y = tf.nn.tanh( tf.matmul(h1, w2) + b2 )
   
   pactions = []
   offset = 0
@@ -233,7 +228,8 @@ if __name__ == '__main__':
     rewards_per_ep.append(total_reward)
     iters_per_ep.append(iters)
     if env.current_length != env_length:
-      print "Leveled up! Current length = {} (ep={})".format(env.current_length, ep)
+      sys.stderr.write("Leveled up! Current length = {} (ep={})\n".format(
+        env.current_length, ep))
       env_length = env.current_length
       if env.current_length == 30:
         break
