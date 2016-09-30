@@ -4,9 +4,9 @@ import numpy as np
 import gym
 import sys
 
-#ENV_NAME = 'Copy-v0'
+ENV_NAME = 'Copy-v0'
 #ENV_NAME = 'DuplicatedInput-v0'
-ENV_NAME = 'RepeatCopy-v0'
+#ENV_NAME = 'RepeatCopy-v0'
 
 _CONFIGS = {
   'Copy-v0': dict(
@@ -33,10 +33,11 @@ _CONFIGS = {
 
 _CONFIG = _CONFIGS[ENV_NAME]
 
-N_EPISODES = 10000
+N_EPISODES = 5000
 # Bail out early if we beat the final level (by expanding the environment's
 # current_length to its max of 30)
-EARLY_EXIT = 1
+EARLY_EXIT = 0
+MONITOR = 1
 # Does setting this to high values encourage dilly-dallying? (And does ZERO_PENALTY offset that?)
 GAMMA = _CONFIG.get('gamma', .9)
 # How many episodes to render after training
@@ -213,6 +214,8 @@ if __name__ == '__main__':
   )
   env = gym.make('Reverse-v1')
   '''
+  if MONITOR:
+    env.monitor.start('/tmp/{}'.format(ENV_NAME), force=True)
   nchars = env.observation_space.n 
   n_actions = len(env.action_space.spaces)
   # 2 + 2 + 5 (move head, write or nah, which char to write)
@@ -315,15 +318,16 @@ if __name__ == '__main__':
       if env.current_length == 30 and EARLY_EXIT:
         break
 
+  if MONITOR:
+    env.monitor.close()
+
   if RENDER_EPISODES:
-    env.monitor.start('/tmp/dedupe-1', force=True)
     for i in range(RENDER_EPISODES):
       episode(sess, env, pactions, nchars, actions_size, x, render=True)
       if i != RENDER_EPISODES-1:
         print
         print "*" * 80
         print
-    env.monitor.close()
   window = 200 + N_EPISODES/100
   ravg = lambda vals: np.convolve(vals, np.ones((window,))/window, mode='valid')
   running_avg = np.convolve(rewards_per_ep, np.ones( (window,))/window, mode='valid')
