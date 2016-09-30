@@ -5,7 +5,8 @@ import gym
 import sys
 
 #ENV_NAME = 'Copy-v0'
-ENV_NAME = 'DuplicatedInput-v0'
+#ENV_NAME = 'DuplicatedInput-v0'
+ENV_NAME = 'RepeatCopy-v0'
 
 _CONFIGS = {
   'Copy-v0': dict(
@@ -18,23 +19,43 @@ _CONFIGS = {
     input_last_action=1,
     learning_rate=0.01,
   ),
+  # Doesn't work :(
+  'RepeatCopy-v0': dict(
+    input_last_char=0,
+    input_last_action=0,
+    input_last_direction=1,
+    completion_bonus=1.5,
+    gamma=.7,
+    learning_rate=0.005
+  ),
 }
   
 
 _CONFIG = _CONFIGS[ENV_NAME]
 
 N_EPISODES = 10000
+# Bail out early if we beat the final level (by expanding the environment's
+# current_length to its max of 30)
 EARLY_EXIT = 1
 # Does setting this to high values encourage dilly-dallying? (And does ZERO_PENALTY offset that?)
 GAMMA = _CONFIG.get('gamma', .9)
+# How many episodes to render after training
 RENDER_EPISODES = 0
+# L2 weight penalty
 L2 = 1
 L2_WEIGHT = 0.001
-COMPLETION_BONUS = 0
+# If an episode was successfully completed (i.e. all target characters were
+# written to the tape), multiply all rewards for that episode by this amount,
+# if set.
+COMPLETION_BONUS = _CONFIG.get('completion_bonus', 0)
 LEARNING_RATE = _CONFIG.get('learning_rate', 0.001)
 
 INPUT_LAST_CHAR = _CONFIG.get('input_last_char', 0)
 INPUT_LAST_ACTION = _CONFIG.get('input_last_action', 0)
+# Subset of the above, just covering left/right (or neither). Enable at most
+# one of these, not both.
+INPUT_LAST_DIRECTION = _CONFIG.get('input_last_direction', 0)
+assert not (INPUT_LAST_ACTION and INPUT_LAST_DIRECTION)
 INPUT_LAST_REWARD = 0
 
 N_HIDDEN = 40
@@ -58,9 +79,9 @@ def bias_var(shape):
   initial = tf.constant(.1, shape=shape)
   return tf.Variable(initial)
 
-def weight_var(shape):
+def weight_var(shape, name):
   initial = tf.truncated_normal(shape, stddev=0.1)
-  return tf.Variable(initial)
+  return tf.Variable(initial, name=name)
 
 def episode(sess, env, pactions, nchars, actions_size, x, render=False):
   obs = env.reset()
@@ -82,6 +103,12 @@ def episode(sess, env, pactions, nchars, actions_size, x, render=False):
       xarr += last_char_arr
     if INPUT_LAST_ACTION:
       xarr += last_action
+    if INPUT_LAST_DIRECTION:
+      # left, right, neither
+      ld = last_action[:2] + [0]
+      if 1 not in ld:
+        ld[2] = 1
+      xarr += ld
     if INPUT_LAST_REWARD:
       xarr += [last_reward]
     return xarr
@@ -195,15 +222,20 @@ if __name__ == '__main__':
     (INPUT_LAST_CHAR * nchars) + 
     # We'll add one more input which represents "no action taken" (i.e. this is the first step)
     INPUT_LAST_ACTION * (actions_size+1) + 
+    INPUT_LAST_DIRECTION * (3) +
     INPUT_LAST_REWARD * 1
   )
   x = tf.placeholder(tf.float32, shape=[None, input_size])
-  w1 = weight_var([input_size, N_HIDDEN])
+  w1 = weight_var([input_size, N_HIDDEN], 'w1')
   b1 = bias_var([N_HIDDEN])
   h1 = tf.nn.relu( tf.matmul(x, w1) + b1 )
-  w2 = weight_var([N_HIDDEN, actions_size])
+  w2 = weight_var([N_HIDDEN, actions_size], 'w2')
   b2 = bias_var([actions_size])
+  #noize = tf.truncated_normal([1, actions_size], mean=.6, stddev=.3) # Hardcoding batch size :/
   y = tf.nn.relu( tf.matmul(h1, w2) + b2 )
+  #y = tf.add(tf.matmul(h1, w2), b2)
+  #y = tf.add(tf.nn.relu( tf.matmul(h1, w2) + b2 ), noize)
+    
   
   # Probabilities of each action
   pactions = []
@@ -224,6 +256,7 @@ if __name__ == '__main__':
   iters_per_ep = []
   loss_per_ep = []
   DEBUG = 0
+  DEBUG_ITER = 14000
   env_length = env.current_length
 
   # Experimented with batching. Seemed to hurt more than help.
@@ -247,8 +280,7 @@ if __name__ == '__main__':
     actions += epactions
     rewards = np.concatenate([rewards, disco_rewards])
     if (ep+1) % EPISODES_PER_BATCH == 0:
-      if DEBUG and ep > 4000:
-        import pdb; pdb.set_trace()
+      if DEBUG and ep > DEBUG_ITER:
         wut, but, why = sess.run([w1, b1, y], feed_dict={x:xs})
       if STANDARDIZE_REWARD:
         rewards = rewards - np.mean(rewards)
@@ -256,15 +288,16 @@ if __name__ == '__main__':
         if std:
           rewards /= std
       
-      if DEBUG: 
+      if DEBUG and ep > DEBUG_ITER: 
         pca, foc, temp, loz = sess.run([paction_cat, focprobs, tempered, loss], 
           feed_dict={x:xs, actions_ph: actions, reward_ph: rewards})
-        import pdb; pdb.set_trace()
+        if ep == DEBUG_ITER + 1:
+          import pdb; pdb.set_trace()
       
       lossval, _ = sess.run([loss, optimizer], feed_dict={x: xs, actions_ph: actions, reward_ph: rewards})
       loss_per_ep.append(lossval)
       
-      if DEBUG:
+      if DEBUG and ep > DEBUG_ITER:
         pca2 = sess.run(paction_cat, feed_dict={x: xs})
       
       xs = []
