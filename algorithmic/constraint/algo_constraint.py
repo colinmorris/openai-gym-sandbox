@@ -6,46 +6,52 @@ import sys
 from pysmt.shortcuts import Symbol, Or, And
 import pysmt.shortcuts as sc
 import pysmt.typing as tp
-from pysmt.solvers.solver import Solver
+from pysmt import logics
 
-NO_OUTPUT = -1
 
 class AlgorithmicSolver(object):
 
-  def __init__(self, env, states):
+  def __init__(self, env, states, solver_name):
     assert isinstance(env, gym.envs.algorithmic.algorithmic_env.AlgorithmicEnv)
-    self.env = env
-    # directions
-    dirs, write_mode, write_chars = self.env.action_space.spaces
-    assert dirs.n == 2
-    self.dirs = "left", "right"
-    self.n_chars = write_chars.n
-    self.chars = [ chr(ord('A')+i) for i in range(write_chars.n) ]
-    self.n_inputs = self.n_chars+1 # plus blank space
-    self.n_outputs = self.n_chars+1 # plus "don't write"
-    # All characters plus a null/blank character
-    self.chars_plus = self.chars + ['_']
-    self.n_states = states
-    self.states = range(self.n_states)
-    self.solver = Solver()
+    # Quantifier-free boolean logic - the simplest available, and all we need
+    solver = sc.Solver(name=solver_name, logic=logics.QF_BOOL)
+    self.helper = BoolSatHelper(solver, env, states)
+    self.runner = AlgorithmicPolicyRunner(self.helper, env)
 
-  def solve(self):
-    while 1:
-      self.helper.reset_dirty_rules()
-      done, success = self.try_model()
-      if done:
-        return success
+  def solve(self, maxiters=float('inf')):
+    i = 0
+    while 1 and i < maxiters:
+      i += 1
+      try:
+        self.helper.resolve()
+      except UnsatException:
+        # Exhausted all possibilities
+        logging.warning("Exhausted possibilities after {} iterations".format(i))
+        return False
+      success = self.try_model()
+      if success:
+        logging.info("Solved after {} iterations".format(i))
+        return True
+      if (i % 500) == 0:
+        logging.info("i={:,}".format(i))
+    # Ran out of iterations
+    return False
 
   def try_model(self):
-    max_eps = 1000 # failsafe
+    max_eps = 100000 # failsafe
     i = 0
-    while reward_countdown and i < max_eps:
+    while i < max_eps:
       i+= 1
-      success, reward = self.run_episode()
+      success, reward = self.runner.run_episode()
       if not success:
         return False
-      if reward >= env.spec.reward_threshold:
+      elif reward >= env.spec.reward_threshold:
         return True
+      else:
+        print ".",
+        # That episode was successful! We shouldn't include the rules involved
+        # in it in our nogood clause
+        self.helper.clear_dirty()
     logging.warning("Performed {} iters without failure or reaching reward\
       threshold. Sus.".format(max_eps))
     return False
@@ -69,21 +75,25 @@ class AlgorithmicPolicyRunner(object):
     # overall successful iff the last step has positive reward
     return reward > 0, total_reward
 
+class UnsatException(Exception):
+  pass
+
 class BoolSatHelper(object):
   def __init__(self, solver, env, n_states):
     assert isinstance(env, gym.envs.algorithmic.algorithmic_env.AlgorithmicEnv)
+    self.solver = solver
     self.env = env
     # directions
     dirs, write_mode, write_chars = self.env.action_space.spaces
-    assert dirs.n == 2
-    self.dirs = "left", "right"
+    if dirs.n != 2:
+      logging.warning("{} directions - are you sure about this?".format(dirs.n))
+    self.dirs = range(dirs.n)
     self.n_chars = write_chars.n
-    self.chars = [ chr(ord('A')+i) for i in range(write_chars.n) ]
     self.n_inputs = self.n_chars+1 # plus blank space
     self.n_outputs = self.n_chars+1 # plus "don't write"
     # All characters plus a null/blank character
-    self.chars_plus = self.chars + ['_']
-    self.n_states = states
+    self.chars_plus = range(self.n_chars+1)
+    self.n_states = n_states
     self.states = range(self.n_states)
 
     self.direction_rules = self._rule_vars('dir_rule', self.dirs)
@@ -105,31 +115,48 @@ class BoolSatHelper(object):
         (self.dirs, self.direction_rules),
         (self.chars_plus, self.write_rules),
         (self.states, self.state_rules)]:
-      assert len(domain) >= 2
+      if len(domain) < 2:
+        logging.warning("Domain with less than 2 options. Weird.")
+        continue
       if len(domain) == 2:
         # no constraints needed. law of the excluded middle, baby
-        break
+        continue
       else:
         for varset in rules.itervalues():
           justone = sc.ExactlyOne(*varset)
           self.solver.add_assertion(justone)
 
 
-  def reset_dirty_rules(self):
+  def resolve(self):
+    """We're getting read to try out another policy (because the last one failed,
+    or because we're on our first iteration). Apply any new constraints we've 
+    learned, then find a new solution.
+    """
     if self.dirty_variables:
       nogood = sc.And(*self.dirty_variables)
       self.solver.add_assertion(sc.Not(nogood))
     self.dirty_variables = set()
     self.dirty_buffer = set()
+    sat = self.solver.solve()
+    if not sat:
+      raise UnsatException()
 
+  def clear_dirty(self):
+    self.dirty_variables = set()
+    self.dirty_buffer = set()
+    
   def _rule_vars(self, name, to_domain):
     from_domains = [self.states, self.chars_plus]
     rules = {}
+    assert len(to_domain) >= 1
+    if len(to_domain) == 1:
+      # Should only come up if max_states = 1
+      logging.warning("Domain with one value: {}. Stuff may get weird.".format(name))
+      val = None
     for input_tup in itertools.product(*from_domains):
-      assert len(to_domain) >= 2
       if len(to_domain) == 2:
         val = Symbol('{}_{}'.format(name, '_'.join(map(str, input_tup))), tp.BOOL)
-      else:
+      elif len(to_domain) > 2:
         val = [Symbol('{}_{}__{}'.format(
                   name, '_'.join(map(str, input_tup)), output_val), tp.BOOL)
               for output_val in to_domain]
@@ -139,7 +166,7 @@ class BoolSatHelper(object):
   def get_action(self, obs, state):
     # Flush buffer, if any
     if self.dirty_buffer:
-      self.dirty_variables.union(self.dirty_buffer)
+      self.dirty_variables.update(self.dirty_buffer)
       self.dirty_buffer = set()
     dirno = self._lookup(self.direction_rules, obs, state)
     writeno = self._lookup(self.write_rules, obs, state, buff=False)
@@ -148,6 +175,8 @@ class BoolSatHelper(object):
     return (dirno, do_write, to_write)
 
   def get_state(self, obs, state):
+    if self.n_states == 1:
+      return 0
     return self._lookup(self.state_rules, obs, state)
 
   def _lookup(self, rules, obs, state, buff=True):
@@ -158,6 +187,8 @@ class BoolSatHelper(object):
           ret = i
           form = formula
           break
+      else:
+        assert False, "Shouldn't have exhausted loop"
     else:
       val = self.solver.get_py_value(thing)
       # Bool -> 0/1
@@ -171,53 +202,6 @@ class BoolSatHelper(object):
       self.dirty_variables.add(form)
     return ret
 
-class AlgorithmicPolicy(object):
-
-  def __init__(self, dp, op, sp):
-    self.direction_policy, self.output_policy, self.state_policy = dp, op, sp
-
-  def get_action(self, obs, state):
-    direction = self.direction_policy(obs, state)
-    output = self.output_policy(obs, state)
-    output_tuple = (0, 0) if output == NO_OUTPUT else (1, output)
-    return (direction,) + output_tuple
-  
-  def run(self, env):
-    seen_reward_thresh = False
-    reward_countdown = env.spec.trials
-    while reward_countdown:
-      success, reward = self.run_episode(env)
-      if not success:
-        return False
-      seen_reward_thresh = reward >= env.spec.reward_threshold
-      if (seen_reward_thresh):
-        reward_countdown -= 1
-    return reward_countdown == 0
-
-  def run_episode(self, env):
-    obs = env.reset()
-    done = False
-    total_reward = 0
-    state = 0
-    while not done:
-      action = self.get_action(obs, state)
-      state = self.state_policy(obs, state)
-      obs, reward, done, _ = env.step(action)
-      total_reward += reward
-    # Assumption (which should hold for all algorithmic envs): an episode is 
-    # overall successful iff the last step has positive reward
-    return reward > 0, total_reward
-
-def solve_env(env, max_states):
-  pols = PolicyEnumerator(env).enum(max_states)
-  for i, pol in enumerate(pols):
-    success = pol.run(env)
-    if success:
-      return True
-    if (i % 100000) == 0:
-      logging.debug('i={:,}'.format(i))
-  return False
-
 if __name__ == '__main__':
   try:
     env_name = sys.argv[1]
@@ -226,8 +210,13 @@ if __name__ == '__main__':
     logging.warning("No environment name provided. Defaulting to {}".format(env_name))
   env = gym.make(env_name)
   t0 = time.time()
-  max_states = 1
-  succ = solve_env(env, max_states)
+  max_states = 5
+  try:
+    solver_implementation = sys.argv[2]
+  except IndexError:
+    solver_implementation = 'z3'
+  sol = AlgorithmicSolver(env, max_states, solver_implementation)
+  succ = sol.solve() 
   elapsed = time.time() - t0
   print "{} after {:.1f}s".format(
     "Solved" if succ else "Exhausted policies", elapsed
