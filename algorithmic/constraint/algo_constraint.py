@@ -40,20 +40,28 @@ class AlgorithmicSolver(object):
   def try_model(self):
     max_eps = 100000 # failsafe
     i = 0
+    goodeps = 0
     while i < max_eps:
       i+= 1
       success, reward = self.runner.run_episode()
       if not success:
-        return False
-      elif reward >= env.spec.reward_threshold:
-        return True
+        break
       else:
-        print ".",
+        goodeps += 1
+        if reward >= env.spec.reward_threshold:
+          break
         # That episode was successful! We shouldn't include the rules involved
         # in it in our nogood clause
         self.helper.clear_dirty()
-    logging.warning("Performed {} iters without failure or reaching reward\
-      threshold. Sus.".format(max_eps))
+
+    if reward >= env.spec.reward_threshold:
+      return True
+
+    if i == max_eps:
+      logging.warning("Performed {} iters without failure or reaching reward\
+        threshold. Sus.".format(max_eps))
+    if goodeps:
+      logging.info("Failed after {} successful episodes".format(goodeps))
     return False
 
 class AlgorithmicPolicyRunner(object):
@@ -210,7 +218,7 @@ if __name__ == '__main__':
     logging.warning("No environment name provided. Defaulting to {}".format(env_name))
   env = gym.make(env_name)
   t0 = time.time()
-  max_states = 5
+  max_states = 2
   try:
     solver_implementation = sys.argv[2]
   except IndexError:
