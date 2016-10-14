@@ -11,11 +11,25 @@ from pysmt import logics
 
 class AlgorithmicSolver(object):
 
-  def __init__(self, env, states, solver_name):
+  def __init__(self, env, n_states, solver_name):
+    """Except for "Copy-v0" all the algorithmic problems require some memory - 
+    they can't be solved with a policy that only sees the current input character.
+
+    States are a generic way to add the necessary expressivity. The model decides
+    which way to move and which character to write based on the current input 
+    character *and* the current state. It also makes a third decision at each timestep
+    based on the current character/state: which state to move to next. 
+
+    1 state (which is to say no states) is enough for Copy-v0. 2 states are enough
+    for RepeatCopy, DuplicatedInput, and Reverse. Not clear how many are needed
+    for the addition environments, but safe to say it's at least 3 (they use 
+    ternary numbers, and the model at least needs to know which of 3 possible digits
+    it's adding to the digit it's currently looking at.)
+    """
     assert isinstance(env, gym.envs.algorithmic.algorithmic_env.AlgorithmicEnv)
     # Quantifier-free boolean logic - the simplest available, and all we need
     solver = sc.Solver(name=solver_name, logic=logics.QF_BOOL)
-    self.helper = BoolSatHelper(solver, env, states)
+    self.helper = BoolSatHelper(solver, env, n_states)
     self.runner = AlgorithmicPolicyRunner(self.helper, env)
 
   def solve(self, maxiters=float('inf')):
@@ -23,11 +37,13 @@ class AlgorithmicSolver(object):
     while 1 and i < maxiters:
       i += 1
       try:
+        # Refresh our model/policy
         self.helper.resolve()
       except UnsatException:
         # Exhausted all possibilities
         logging.warning("Exhausted possibilities after {} iterations".format(i))
         return False
+      # Try the new model
       success = self.try_model()
       if success:
         logging.info("Solved after {} iterations".format(i))
@@ -35,12 +51,15 @@ class AlgorithmicSolver(object):
       if (i % 500) == 0:
         logging.info("i={:,}".format(i))
     # Ran out of iterations
+    logging.warning("Used up all {} iterations.".format(maxiters))
     return False
 
   def try_model(self):
     max_eps = 100000 # failsafe
     i = 0
     goodeps = 0
+    # Run a bunch of episodes under the current policy until one episode ends
+    # in failure, or we succeed enough that we reach the reward threshold.
     while i < max_eps:
       i+= 1
       success, reward = self.runner.run_episode()
@@ -119,6 +138,10 @@ class BoolSatHelper(object):
     self.add_base_constraints()
 
   def add_base_constraints(self):
+    """Add a priori rules.
+    In practice, the only ones we know are that groups of variables representing
+    a multi-valued thing should sum to 1. 
+    """
     for domain, rules in [
         (self.dirs, self.direction_rules),
         (self.chars_plus, self.write_rules),
@@ -154,6 +177,12 @@ class BoolSatHelper(object):
     self.dirty_buffer = set()
     
   def _rule_vars(self, name, to_domain):
+    """Return a representation of a policy mapping (state, input_character) to 
+    to_domain, some set of actions. Namely a dictionary with (state, charno)
+    keys and values being a Symbol (if to_domain has two values, representable
+    with one bit), or a list of symbols of length n (where n>2 is the length
+    of to_domain).
+    """
     from_domains = [self.states, self.chars_plus]
     rules = {}
     assert len(to_domain) >= 1
@@ -214,7 +243,7 @@ if __name__ == '__main__':
   try:
     env_name = sys.argv[1]
   except IndexError:
-    env_name = 'Copy-v0'
+    env_name = 'Reverse-v0'
     logging.warning("No environment name provided. Defaulting to {}".format(env_name))
   env = gym.make(env_name)
   t0 = time.time()
@@ -222,7 +251,9 @@ if __name__ == '__main__':
   try:
     solver_implementation = sys.argv[2]
   except IndexError:
-    solver_implementation = 'z3'
+    # Empirically, this seems to be the fastest across envs, but haven't done
+    # thorough testing.
+    solver_implementation = 'msat'
   sol = AlgorithmicSolver(env, max_states, solver_implementation)
   succ = sol.solve() 
   elapsed = time.time() - t0
