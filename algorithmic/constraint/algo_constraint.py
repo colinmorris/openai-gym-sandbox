@@ -9,6 +9,10 @@ import pysmt.typing as tp
 from pysmt import logics
 
 
+# If we get a keyboard interrupt, continue for this many episodes, rendering them
+# to stdout, before exiting. 
+RENDER_BEFORE_BAIL = 5
+
 class AlgorithmicSolver(object):
 
   def __init__(self, env, n_states, solver_name):
@@ -34,27 +38,39 @@ class AlgorithmicSolver(object):
 
   def solve(self, maxiters=float('inf')):
     i = 0
+    render_countdown = 0
     while 1 and i < maxiters:
-      i += 1
       try:
-        # Refresh our model/policy
-        self.helper.resolve()
-      except UnsatException:
-        # Exhausted all possibilities
-        logging.warning("Exhausted possibilities after {} iterations".format(i))
-        return False
-      # Try the new model
-      success = self.try_model()
-      if success:
-        logging.info("Solved after {} iterations".format(i))
-        return True
-      if (i % 500) == 0:
-        logging.info("i={:,}".format(i))
+        i += 1
+        try:
+          # Refresh our model/policy
+          self.helper.resolve()
+        except UnsatException:
+          # Exhausted all possibilities
+          logging.warning("Exhausted possibilities after {} iterations".format(i))
+          return False
+        # Try the new model
+        success = self.try_model(render=render_countdown)
+        if success:
+          logging.info("Solved after {} iterations".format(i))
+          return True
+        if (i % 500) == 0:
+          logging.info("i={:,}".format(i))
+        if render_countdown:
+          render_countdown -= 1
+          if render_countdown == 0:
+            return False
+      except KeyboardInterrupt:
+        if RENDER_BEFORE_BAIL and not render_countdown:
+          logging.warning("Caught keyboard interrupt. Rendering {} more episodes before exiting.".format(RENDER_BEFORE_BAIL))
+          render_countdown = RENDER_BEFORE_BAIL
+        else:
+          raise
     # Ran out of iterations
     logging.warning("Used up all {} iterations.".format(maxiters))
     return False
 
-  def try_model(self):
+  def try_model(self, render):
     max_eps = 100000 # failsafe
     i = 0
     goodeps = 0
@@ -62,7 +78,7 @@ class AlgorithmicSolver(object):
     # in failure, or we succeed enough that we reach the reward threshold.
     while i < max_eps:
       i+= 1
-      success, reward = self.runner.run_episode()
+      success, reward = self.runner.run_episode(render)
       if not success:
         break
       else:
@@ -88,7 +104,7 @@ class AlgorithmicPolicyRunner(object):
     self.helper = helper
     self.env = env
 
-  def run_episode(self):
+  def run_episode(self, render):
     obs = env.reset()
     done = False
     total_reward = 0
@@ -97,6 +113,8 @@ class AlgorithmicPolicyRunner(object):
       action = self.helper.get_action(obs, state)
       state = self.helper.get_state(obs, state)
       obs, reward, done, _ = env.step(action)
+      if render:
+        env.render()
       total_reward += reward
     # Assumption (which should hold for all algorithmic envs): an episode is 
     # overall successful iff the last step has positive reward
@@ -247,7 +265,7 @@ if __name__ == '__main__':
     logging.warning("No environment name provided. Defaulting to {}".format(env_name))
   env = gym.make(env_name)
   t0 = time.time()
-  max_states = 2
+  max_states = 5
   try:
     solver_implementation = sys.argv[2]
   except IndexError:
