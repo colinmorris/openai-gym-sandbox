@@ -1,4 +1,4 @@
-`algorithmic.py` is a script that solves a few environments in the [Algorithmic](https://gym.openai.com/envs#algorithmic) category in the OpenAI gym.
+`policy_gradients.py` is a script that solves a few environments in the [Algorithmic](https://gym.openai.com/envs#algorithmic) category in the OpenAI gym.
 
 Basically semi-homemade policy gradients implementation. Some inspiration drawn from these examples:
 

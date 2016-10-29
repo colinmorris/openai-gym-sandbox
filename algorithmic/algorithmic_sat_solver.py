@@ -1,12 +1,31 @@
+"""Describe a family of deterministic policies using a bunch
+of boolean variables, then use a SAT solver to do a backtracking search to find
+a successful policy. Overall flow looks like:
+
+1. ask SAT solver for a variable assignment that satisfies current constraints
+2. have an agent follow the policy described by that variable assignment. If it
+  wins, great. Otherwise, add a new constraint to the solver, and goto 1.
+
+The new constraint added in 2 is the nand of all the rules that led up to our 
+failure. e.g. if we see 'A', move right and write nothing, see 'B', move left and write 'C', then we add the following 'nogood' constraint:
+
+  not( and( if_A_then_right, if_A_write_nothing, if_B_write_C ))
+
+(In practice, the rules will be a bit more complicated than this, because most of the time the model is making decisions based not just on what it reads from the input tape, but also a 'state' variable described below.)
+
+Solves all 1-d algorithmic environments (Copy, RepeatCopy, DuplicatedInput, Reverse), taking on the order of 10s. Haven't managed to solve addition envs yet. (Not even clear how many states are necessary. 3 is almost certainly not enough. 5 is probably enough for Reversed-Addition-v0.)
+"""
 import gym
 import time
 import logging
+import numpy as np
 import itertools
 import sys
 from pysmt.shortcuts import Symbol, Or, And
 import pysmt.shortcuts as sc
 import pysmt.typing as tp
 from pysmt import logics
+import argparse
 
 
 # If we get a keyboard interrupt, continue for this many episodes, rendering them
@@ -52,7 +71,7 @@ class AlgorithmicSolver(object):
         # Try the new model
         success = self.try_model(render=render_countdown)
         if success:
-          logging.info("Solved after {} iterations".format(i))
+          print "Solved after {} iterations".format(i)
           return True
         if (i % 500) == 0:
           logging.info("i={:,}".format(i))
@@ -62,18 +81,19 @@ class AlgorithmicSolver(object):
             return False
       except KeyboardInterrupt:
         if RENDER_BEFORE_BAIL and not render_countdown:
-          logging.warning("Caught keyboard interrupt. Rendering {} more episodes before exiting.".format(RENDER_BEFORE_BAIL))
+          print "Caught keyboard interrupt. Rendering {} more episodes before exiting.".format(RENDER_BEFORE_BAIL)
           render_countdown = RENDER_BEFORE_BAIL
         else:
           raise
     # Ran out of iterations
-    logging.warning("Used up all {} iterations.".format(maxiters))
+    print "Used up all {} iterations.".format(maxiters)
     return False
 
   def try_model(self, render):
     max_eps = 100000 # failsafe
     i = 0
     goodeps = 0
+    rewards = []
     # Run a bunch of episodes under the current policy until one episode ends
     # in failure, or we succeed enough that we reach the reward threshold.
     while i < max_eps:
@@ -83,14 +103,13 @@ class AlgorithmicSolver(object):
         break
       else:
         goodeps += 1
-        if reward >= env.spec.reward_threshold:
-          break
+        rewards.append(reward)
+        if len(rewards) >= env.spec.trials and \
+            np.mean(rewards[-env.spec.trials:]) >= env.spec.reward_threshold:
+          return True
         # That episode was successful! We shouldn't include the rules involved
         # in it in our nogood clause
         self.helper.clear_dirty()
-
-    if reward >= env.spec.reward_threshold:
-      return True
 
     if i == max_eps:
       logging.warning("Performed {} iters without failure or reaching reward\
@@ -175,7 +194,6 @@ class BoolSatHelper(object):
           justone = sc.ExactlyOne(*varset)
           self.solver.add_assertion(justone)
 
-
   def resolve(self):
     """We're getting read to try out another policy (because the last one failed,
     or because we're on our first iteration). Apply any new constraints we've 
@@ -258,23 +276,26 @@ class BoolSatHelper(object):
     return ret
 
 if __name__ == '__main__':
-  try:
-    env_name = sys.argv[1]
-  except IndexError:
-    env_name = 'Reverse-v0'
-    logging.warning("No environment name provided. Defaulting to {}".format(env_name))
-  env = gym.make(env_name)
+  parser = argparse.ArgumentParser()
+  parser.add_argument('env', nargs='?', default='Copy-v0')
+  parser.add_argument('--solver', default='msat')
+  parser.add_argument('-s', '--states', type=int, default=2, 
+    help='''How many states. Copy only needs 1. Other 1-d envs need 2. 
+    Addition envs need more.''')
+  parser.add_argument('-v', '--verbose', action='store_true')
+  parser.add_argument('--monitor')
+  args = parser.parse_args()
+  logger = logging.getLogger()
+  logger.setLevel(logging.INFO if args.verbose else logging.WARNING)
+  env = gym.make(args.env)
+  if args.monitor:
+    env.monitor.start(args.monitor, force=True)
   t0 = time.time()
-  max_states = 5
-  try:
-    solver_implementation = sys.argv[2]
-  except IndexError:
-    # Empirically, this seems to be the fastest across envs, but haven't done
-    # thorough testing.
-    solver_implementation = 'msat'
-  sol = AlgorithmicSolver(env, max_states, solver_implementation)
+  sol = AlgorithmicSolver(env, args.states, args.solver)
   succ = sol.solve() 
   elapsed = time.time() - t0
   print "{} after {:.1f}s".format(
     "Solved" if succ else "Exhausted policies", elapsed
   )
+  if args.monitor:
+    env.monitor.close()

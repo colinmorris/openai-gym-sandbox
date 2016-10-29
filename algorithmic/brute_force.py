@@ -1,3 +1,8 @@
+"""Brute force search over the space of deterministic policy functions for 
+algorithmic problems. Works for copy-v0. For stateful problems, way too slow.
+(Would take around 35m years to find policies for RepeatCopy, DuplicatedInput,
+etc., by my calculations.)
+"""
 import gym
 import time
 import logging
@@ -45,9 +50,7 @@ class PolicyEnumerator(object):
     # and memory-intensive compared to nested loops
     for dp in direction_pols:
       for op in self.enumerate_output_policies(n):
-      #for op in output_pols:
         for sp in self.enumerate_state_policies(n):
-        #for sp in state_pols:
           yield AlgorithmicPolicy(dp, op, sp)
 
   def enumerate_direction_policies(self, n_states):
