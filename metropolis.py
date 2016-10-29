@@ -10,7 +10,7 @@ class OneActionAgent(object):
     def __init__(self, action):
         self.action = action
 
-    def act(self):
+    def act(self, unused_observation):
         return self.action
 
 class OneActionModel(object):
@@ -56,6 +56,6 @@ if __name__ == "__main__":
       candidate_model = model.symmetric_mutate()
       reward = run_one_episode(env, candidate_model)
       value = reward_to_value(reward)
-      if value / previous_value > random.rand():
+      if value / previous_value > random.random():
           model = candidate_model
           previous_value = value
